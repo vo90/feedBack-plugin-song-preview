@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Song Preview">
+  <defs>
+    <linearGradient id="sp-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b1b33"/>
+      <stop offset="1" stop-color="#0a0a14"/>
+    </linearGradient>
+  </defs>
+  <!-- pedal face -->
+  <rect width="256" height="256" rx="46" fill="url(#sp-bg)"/>
+  <rect x="6" y="6" width="244" height="244" rx="40" fill="none" stroke="#4080e0" stroke-width="3" opacity="0.25"/>
+  <!-- play disc -->
+  <circle cx="102" cy="128" r="54" fill="#10101e" stroke="#4080e0" stroke-width="6"/>
+  <path d="M88 100 L134 128 L88 156 Z" fill="#60a0ff"/>
+  <!-- preview sound waves -->
+  <g fill="none" stroke="#60a0ff" stroke-linecap="round" stroke-width="10">
+    <path d="M170 108 a30 30 0 0 1 0 40" opacity="0.95"/>
+    <path d="M190 92 a52 52 0 0 1 0 72" opacity="0.6"/>
+    <path d="M210 78 a74 74 0 0 1 0 100" opacity="0.3"/>
+  </g>
+</svg>
