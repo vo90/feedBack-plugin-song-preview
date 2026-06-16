@@ -26,37 +26,7 @@ Hear a preview of songs in your library as you browse them. On desktop, just hov
 
 * **On/Off Toggle:** Find it in Settings, or under the **Plugins** dropdown at the top. Red = off, green = on. Defaults to on, and your choice survives plugin updates.
 
----
 
-## How to install?
-
-**The easy way:** Song Preview is in the official plugin list, so you can find and install it straight from the **Update Manager** plugin — no URLs to paste, and you'll get future updates from there too.
-
-**The manual way** — Ez-pz steps with Sin:
-
-```bash
-1) cd /path/to/feedback/plugins
-2) git clone https://github.com/DeathlySin/feedback-plugin-song-preview.git song_preview
-3) Restart fee[dB]ack
-4) ???
-5) Profit
-```
-
-(You can also point Update Manager at the repo directly if you prefer: `https://github.com/DeathlySin/feedback-plugin-song-preview.git`)
-
----
-
-## Questions? Bugs?
-
-Open an [issue](https://github.com/DeathlySin/feedback-plugin-song-preview/issues), or ping `@deathlysin` in the fee[dB]ack Discord's plugins channel — [join here](https://discord.gg/TzPVK8fNBm).
-
----
-
-## ☕ Support — completely optional!
-
-First things first: this plugin is **free**, and nothing here is locked behind a payment. You owe me absolutely nothing — please don't feel any pressure whatsoever. 🙂
-
-That said, if you like the plugin, and you *fancy* showing some support, you're very welcome to [**buy me a coffee**](https://buymeacoffee.com/deathlysin). It's genuinely not expected or demanded — just a kind gesture that helps keep the cogs turning in my brain so I can bring more projects like this one to life. Either way, thanks for using it! ❤️
 
 ## License
 
