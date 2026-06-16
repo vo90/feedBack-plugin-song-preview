@@ -22,6 +22,12 @@ if str(_LIB) not in sys.path:
 _context: dict = {}
 _cache_dir: Path | None = None
 
+# The backfill sibling module, loaded once in setup(). Module-level helpers
+# (e.g. _loose_preview_ogg, run from the /audio executor) reach it through
+# here rather than re-importing, so the host's load_sibling namespacing is
+# honoured exactly once.
+_backfill = None
+
 # One lock per cache key so concurrent requests for the same file don't both transcode.
 _transcode_locks: dict[str, threading.Lock] = {}
 _locks_mutex = threading.Lock()
@@ -227,6 +233,98 @@ def _sloppak_preview_ogg(sloppak_path: Path) -> Path:
     return out
 
 
+def _loose_preview_ogg(song_dir: Path) -> Path:
+    """Generate (and cache) a preview OGG for a loose-folder song.
+
+    Loose folders are unpacked song directories (``audio.wem`` + arrangement
+    XMLs) with no sloppak manifest, so there's no baked ``preview.ogg`` to
+    extract and nowhere natural to inject one. Instead we generate a preview
+    on demand from the folder's own WEM — decode it via the host's
+    ``convert_wem`` (vgmstream → ogg/mp3), trim+fade a clip out of it — and
+    cache the result. No file is written into the user's loose folder.
+
+    Cache key includes the WEM's mtime+size, so re-encoding the audio
+    in place naturally invalidates a stale preview (mirrors how the host's
+    own loose-folder audio cache is keyed).
+
+    Any failure to produce a preview (missing decoder, song too short, no
+    audio) raises ``HTTPException(404)`` so the client memoises it and the
+    hover loop stops retrying — there's no per-card Fix affordance for loose
+    songs, and these failure modes are persistent, not transient.
+    """
+    # Host libs (lib/ is on sys.path via the plugin loader / the _LIB shim
+    # above). Imported lazily so module import doesn't hard-depend on the
+    # host being fully wired — matches how the audio module is pulled in
+    # elsewhere in this plugin.
+    try:
+        import loosefolder as loosefolder_mod  # noqa: PLC0415
+        from audio import convert_wem, _ffmpeg_cmd  # noqa: PLC0415
+    except ImportError as e:
+        print(f"[song_preview] loose-folder preview unavailable (host libs): {e}")
+        raise HTTPException(status_code=404, detail="loose-folder preview unavailable")
+
+    wem = loosefolder_mod.find_audio(song_dir)
+    if wem is None:
+        raise HTTPException(status_code=404, detail="loose folder has no audio")
+
+    # Re-resolve and re-confirm containment: defeats a symlinked audio.wem
+    # pointing outside the folder, which would otherwise turn convert_wem
+    # into an arbitrary-file decode primitive. Mirrors the host's own guard.
+    wem_resolved = wem.resolve()
+    try:
+        wem_resolved.relative_to(song_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="audio escapes the loose folder")
+
+    try:
+        wem_stat = wem_resolved.stat()
+    except OSError:
+        raise HTTPException(status_code=404, detail="loose folder has no audio")
+
+    key_input = f"v1-loose:{song_dir}:{wem_stat.st_mtime}:{wem_stat.st_size}"
+    cache_key = hashlib.sha256(key_input.encode()).hexdigest()[:20]
+    out = _get_cache_dir() / f"{cache_key}.ogg"
+    lock = _transcode_lock(cache_key)
+    with lock:
+        if out.exists() and out.stat().st_size > 1000:
+            _touch_cache_entry(out)
+            return out
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="song_preview_loose_") as td:
+                tmp_dir = Path(td)
+                # convert_wem returns the decoded full-mix path (.ogg/.mp3/.wav).
+                converted = convert_wem(str(wem_resolved), str(tmp_dir / "full"))
+                data, _reason = _backfill.build_preview_from_audio_file(
+                    Path(converted), _ffmpeg_cmd(), tmp_dir
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            # Persistent failure (no decoder, too short, corrupt WEM) — surface
+            # as 404 so the client's no-preview memo kicks in. Detail is logged,
+            # not echoed verbatim to the client.
+            print(f"[song_preview] loose-folder preview failed for {song_dir.name}: {e}")
+            raise HTTPException(status_code=404, detail="could not generate preview")
+
+        if not data:
+            raise HTTPException(status_code=404, detail="could not generate preview")
+
+        # Atomic write, same discipline as the sloppak preview cache.
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(out)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+        _evict_cache()
+    return out
+
+
 def _range_response(path: Path, request: Request) -> StreamingResponse:
     """Stream the file with HTTP range support so <audio> can seek."""
     file_size = path.stat().st_size
@@ -314,6 +412,7 @@ def setup(app: FastAPI, context: dict) -> None:
     # plugin-namespaced name (per the host's plugin-loader convention).
     # A bare `import backfill` would risk colliding with another plugin
     # shipping the same module name.
+    global _backfill
     loader = context.get("load_sibling")
     if callable(loader):
         backfill = loader("backfill")
@@ -321,6 +420,10 @@ def setup(app: FastAPI, context: dict) -> None:
         # Older hosts without load_sibling: fall back to bare import.
         # The plugin dir is on sys.path via the host plugin loader.
         import backfill  # type: ignore[import-not-found]  # noqa: PLC0415
+
+    # Stash for module-level helpers (e.g. _loose_preview_ogg) that run off
+    # the request path and need the same loaded instance.
+    _backfill = backfill
 
     _bulk_runner = backfill.BulkRunner()
 
@@ -557,6 +660,14 @@ def setup(app: FastAPI, context: dict) -> None:
                 # `.sloppak/`.
                 ogg = await asyncio.get_event_loop().run_in_executor(
                     None, _sloppak_preview_ogg, full
+                )
+            elif full.is_dir():
+                # Loose-folder song (audio.wem + arrangement XMLs). No baked
+                # preview — generate one on demand from the folder's WEM and
+                # cache it. _loose_preview_ogg raises 404 (not 400) on failure
+                # so the client memoises and stops retrying on every hover.
+                ogg = await asyncio.get_event_loop().run_in_executor(
+                    None, _loose_preview_ogg, full
                 )
             else:
                 raise HTTPException(status_code=400, detail="unsupported file format")

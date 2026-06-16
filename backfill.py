@@ -768,6 +768,27 @@ def build_preview_from_full_audio(
         manifest, arr_blobs, lyrics_blob, duration, full_audio, ffmpeg_cmd
     )
 
+    ogg_bytes = _render_preview_clip(full_audio, start, ffmpeg_cmd, tmp_dir)
+    log.info(
+        "built preview for %s: start=%.2fs via %s",
+        sloppak_path.name, start, reason,
+    )
+    return ogg_bytes, reason
+
+
+def _render_preview_clip(
+    full_audio: Path,
+    start: float,
+    ffmpeg_cmd: str,
+    tmp_dir: Path,
+) -> bytes:
+    """Trim a ``FALLBACK_PREVIEW_DURATION`` clip starting at ``start`` out of
+    ``full_audio``, with linear fades on both ends, and return the OGG bytes.
+
+    Shared by the sloppak path (``build_preview_from_full_audio``) and the
+    loose-folder path (``build_preview_from_audio_file``): both resolve a
+    start offset differently but render the clip identically.
+    """
     out_ogg = tmp_dir / "preview.ogg"
     # afade `st` is relative to the OUTPUT timeline (after -ss seek).
     # Fade-out starts at duration-fade_out so it lands exactly on the
@@ -795,11 +816,58 @@ def build_preview_from_full_audio(
             f"ffmpeg preview build failed (rc={r.returncode}): "
             f"{r.stderr.decode(errors='replace')[:200]}"
         )
+    return out_ogg.read_bytes()
+
+
+def build_preview_from_audio_file(
+    audio_path: Path,
+    ffmpeg_cmd: str | None,
+    tmp_dir: Path,
+    duration_hint: float = 0.0,
+) -> tuple[bytes, str]:
+    """Produce preview OGG bytes from a single, already-decoded audio file.
+
+    Unlike :func:`build_preview_from_full_audio`, this takes a bare audio
+    file with no sidecar manifest, arrangements or lyrics — it's the path
+    for **loose-folder songs**, whose audio is a converted ``audio.wem``
+    with none of a sloppak's metadata. With no lyrics/section data to lean
+    on, the start point comes from loudness detection (lands on the
+    chorus / main riff), falling back to the 25% offset when even that
+    yields no signal.
+
+    Returns ``(ogg_bytes, reason)``. Raises ``RuntimeError`` on any
+    unrecoverable problem (ffmpeg missing, song too short, encode failure).
+    """
+    if not ffmpeg_cmd:
+        raise RuntimeError("ffmpeg not available")
+
+    duration = duration_hint if duration_hint and duration_hint > 0 else 0.0
+    if duration <= 0:
+        duration = _probe_duration_seconds(audio_path, ffmpeg_cmd)
+
+    if duration < MIN_SONG_DURATION:
+        raise RuntimeError(
+            f"song too short for preview "
+            f"({duration:.1f}s < {MIN_SONG_DURATION:.1f}s minimum)"
+        )
+
+    loud_start = _loudness_detect_start(audio_path, ffmpeg_cmd, duration)
+    if loud_start is not None:
+        start = _clamp_start(loud_start, duration)
+        reason = f"loudness-detected (loudest {int(FALLBACK_PREVIEW_DURATION)}s window)"
+    else:
+        start = _clamp_start(duration * FINAL_FALLBACK_OFFSET_FRAC, duration)
+        reason = (
+            f"{int(FINAL_FALLBACK_OFFSET_FRAC * 100)}% fallback "
+            f"(no loudness signal)"
+        )
+
+    ogg_bytes = _render_preview_clip(audio_path, start, ffmpeg_cmd, tmp_dir)
     log.info(
-        "built preview for %s: start=%.2fs via %s",
-        sloppak_path.name, start, reason,
+        "built loose-folder preview from %s: start=%.2fs via %s",
+        audio_path.name, start, reason,
     )
-    return out_ogg.read_bytes(), reason
+    return ogg_bytes, reason
 
 
 # ── Bulk job state ───────────────────────────────────────────────────────────

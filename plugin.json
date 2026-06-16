@@ -1,7 +1,7 @@
 {
   "id": "song_preview",
   "name": "Song Preview",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Hear a preview of songs in your library as you browse — hover on desktop, tap on touch.",
   "category": "audio",
   "icon": "assets/thumb.svg",
