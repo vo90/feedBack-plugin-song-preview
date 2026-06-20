@@ -8,6 +8,5 @@
   "routes": "routes.py",
   "script": "screen.js",
   "screen": "screen.html",
-  "nav": { "label": "Song Preview", "screen": "plugin-song_preview" },
-  "settings": { "html": "settings.html" }
+  "nav": { "label": "Song Preview", "screen": "plugin-song_preview" }
 }
