@@ -22,7 +22,7 @@ Hear a preview of songs in your library as you browse them. On desktop, just hov
 
 * **Built to be safe:** The preview & back-fill pipeline guards against maliciously-crafted Feedpaks (path-traversal and oversized-file protection), so a dodgy file can't trick it into reading something it shouldn't.
 
-* **Supported Formats:** Feedpak `.sloppak` files (zip or folder form) **and loose-folder songs** (a directory with `audio.wem` + arrangement XMLs). Feedpaks carry a baked-in preview clip; loose folders don't have one to bake, so the plugin generates a preview from the folder's own audio the first time you hover, then caches it — the first hover on a loose song may take a moment while it converts, after that it's instant.
+* **Supported Formats:** feedBack `.feedpak` files (zip or folder form) **and loose-folder songs** (a directory with `audio.wem` + arrangement XMLs). Feedpaks carry a baked-in preview clip; loose folders don't have one to bake, so the plugin generates a preview from the folder's own audio the first time you hover, then caches it — the first hover on a loose song may take a moment while it converts, after that it's instant.
 
 * **On/Off Toggle:** Find it on the Song Preview screen, opened from the **Plugins** menu. Red = off, green = on. Defaults to on, and your choice survives plugin updates.
 
