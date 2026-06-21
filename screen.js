@@ -165,11 +165,36 @@
             // useless for cards in the library grid.
             backfill.refresh();
 
+            // Re-audit whenever the user navigates into a library view, so songs
+            // added since load — e.g. freshly built/imported in the editor —
+            // are picked up (Fix badges, missing-preview list) without a manual
+            // library rescan. refresh() is in-flight-guarded, so a per-navigation
+            // call is cheap.
+            const _LIBRARY_SCREENS = new Set(
+                ['home', 'library', 'favorites', 'v3-songs', 'v3-home']);
+            const _onScreenChanged = (e) => {
+                const id = e && e.detail && e.detail.id;
+                if (_LIBRARY_SCREENS.has(id)) backfill.refresh();
+            };
+            // `library:changed` is emitted when a song is added to the library
+            // (e.g. built in the editor) — refresh immediately rather than
+            // waiting for the user to navigate. screen:changed above is the
+            // fallback for changes that don't emit it (uploads, manual rescans).
+            const _onLibraryChanged = () => backfill.refresh();
+            if (window.slopsmith && typeof window.slopsmith.on === 'function') {
+                window.slopsmith.on('screen:changed', _onScreenChanged);
+                window.slopsmith.on('library:changed', _onLibraryChanged);
+            }
+
             // Teardown for when fee[dB]ack unloads the plugin. Reverses
             // everything the idempotency-guarded install set up so a
             // subsequent re-evaluation starts from a clean slate.
             window.__slopsmithSongPreviewTeardown = function teardown() {
                 try { obs.disconnect(); } catch (_) {}
+                if (window.slopsmith && typeof window.slopsmith.off === 'function') {
+                    window.slopsmith.off('screen:changed', _onScreenChanged);
+                    window.slopsmith.off('library:changed', _onLibraryChanged);
+                }
                 loop.destroy();
                 scope.destroy();
                 audio.destroy();
