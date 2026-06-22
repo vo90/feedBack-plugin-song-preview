@@ -836,10 +836,12 @@ export class PreviewBackfill {
         const nodes = allPreviewableNodes();
         for (const node of nodes) {
             const filename = readFilename(node);
-            // The inline Fix badge is only offered for sloppaks (the audit's
-            // generate path keys on them); fast-skip anything else before
-            // the membership test.
-            if (!filename || !filename.toLowerCase().includes('.sloppak')) continue;
+            // The inline Fix badge is only offered for song packages (the
+            // audit's generate path keys on them); fast-skip anything else
+            // before the membership test. Both extensions count: `.sloppak`
+            // (legacy) and `.feedpak` (current).
+            const fnl = filename ? filename.toLowerCase() : '';
+            if (!filename || (!fnl.includes('.sloppak') && !fnl.includes('.feedpak'))) continue;
             const shouldShow = this._missing.has(filename);
             const currentFile = node.dataset[BUTTON_FLAG];
             if (shouldShow) {

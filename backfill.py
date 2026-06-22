@@ -13,6 +13,7 @@ atomic — a kill mid-injection leaves the original sloppak untouched.
 from __future__ import annotations
 
 import concurrent.futures
+import itertools
 import json
 import logging
 import os
@@ -33,6 +34,11 @@ log = logging.getLogger("slopsmith.plugin.song_preview.backfill")
 # what sloppak_convert.py writes when it bakes a preview at convert time,
 # so the manifest's `preview:` key value is stable across both code paths.
 PREVIEW_REL = "preview.ogg"
+
+# Recognised song-package extensions. `.sloppak` is the legacy name; `.feedpak`
+# is the current one (same on-disk layout). Both zip-file and directory forms
+# of either are handled identically throughout.
+PACKAGE_EXTS = (".sloppak", ".feedpak")
 
 
 def _resolve_within(base: Path, rel: str) -> Path | None:
@@ -76,12 +82,14 @@ def _iter_sloppaks(dlc_root: Path) -> Iterable[Path]:
     skipping anything inside an ignored built-in folder."""
     if not dlc_root.is_dir():
         return
-    for entry in dlc_root.rglob("*.sloppak"):
+    for entry in itertools.chain.from_iterable(
+        dlc_root.rglob(f"*{ext}") for ext in PACKAGE_EXTS
+    ):
         # Skip our own unpack cache + any other staging dirs that might
         # appear as siblings — only the user-visible DLC dir matters.
         # We rely on the rglob result being only paths whose terminal
-        # component literally ends in `.sloppak`; both zip-file and
-        # directory forms qualify.
+        # component literally ends in one of PACKAGE_EXTS; both zip-file
+        # and directory forms qualify.
         try:
             parts = entry.relative_to(dlc_root).parts
         except ValueError:
@@ -154,12 +162,14 @@ class MissingEntry:
 
 
 def _entry_title_fallback(filename: str) -> str:
-    """Strip the relpath down to a basename without the .sloppak suffix.
+    """Strip the relpath down to a basename without the package suffix.
     Used when the manifest's title is missing/blank so UI rows always
     have *something* human-ish to display."""
     base = filename.rsplit("/", 1)[-1]
-    if base.lower().endswith(".sloppak"):
-        base = base[: -len(".sloppak")]
+    for ext in PACKAGE_EXTS:
+        if base.lower().endswith(ext):
+            base = base[: -len(ext)]
+            break
     return base
 
 

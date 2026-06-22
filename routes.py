@@ -655,9 +655,11 @@ def setup(app: FastAPI, context: dict) -> None:
 
         file_lower = file.lower()
         try:
-            if file_lower.endswith(".sloppak"):
-                # Covers both forms: zip-file `.sloppak` and directory-form
-                # `.sloppak/`.
+            if file_lower.endswith((".sloppak", ".feedpak")):
+                # Covers both forms (zip-file and directory) of both package
+                # extensions: the legacy `.sloppak` and the current `.feedpak`
+                # (identical on-disk layout — manifest.yaml + stems/ + a
+                # top-level `preview:` clip — just a renamed container).
                 ogg = await asyncio.get_event_loop().run_in_executor(
                     None, _sloppak_preview_ogg, full
                 )
