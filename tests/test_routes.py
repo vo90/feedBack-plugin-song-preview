@@ -62,7 +62,9 @@ def test_audit_lists_sloppaks_missing_a_preview(client, dlc_dir):
     with_preview = dlc_dir / "has-preview.sloppak"
     with_preview.mkdir()
     (with_preview / "manifest.yaml").write_text("schema: 1\npreview: preview.ogg\n", encoding="utf-8")
-    (with_preview / "preview.ogg").write_bytes(b"OGGDATA")
+    # backfill._has_preview() only counts a preview present when the file is
+    # over 100 bytes (guards against stub/truncated files), so pad it.
+    (with_preview / "preview.ogg").write_bytes(b"OGGDATA" * 20)
 
     r = client.get("/api/plugins/song_preview/audit")
     assert r.status_code == 200

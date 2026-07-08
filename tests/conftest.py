@@ -14,10 +14,22 @@ import routes  # noqa: E402
 
 def _load_sibling(name):
     """Mirrors the host's plugin-namespaced sibling loader closely enough
-    for setup() to succeed: just import the real module by file path."""
+    for setup() to succeed: just import the real module by file path.
+
+    Must register in sys.modules before exec_module — backfill.py uses
+    `from __future__ import annotations` (deferred/string annotations),
+    and its dataclasses resolve those strings via
+    sys.modules[cls.__module__].__dict__ at decoration time. Skipping
+    this registration leaves cls.__module__ pointing at a name absent
+    from sys.modules, so ``sys.modules.get(cls.__module__)`` returns
+    None and dataclass field resolution blows up with an
+    AttributeError on 'NoneType' object.
+    """
+    mod_name = f"song_preview_{name}"
     path = Path(__file__).resolve().parent.parent / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(f"song_preview_{name}", path)
+    spec = importlib.util.spec_from_file_location(mod_name, path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
     return mod
 
