@@ -158,13 +158,18 @@ export class PreviewLoop {
             this._resetCandidate();
             return;
         }
-        if (this._menu.isAnyMenuOpen()) {
-            if (this._audio.isActive()) this._audio.stop('menu-open');
+        // Cheapest gate first. isEnabled() is a localStorage read; the menu gate
+        // touches the DOM. When previews are switched off there is no reason to
+        // ask about menus at all — and this loop keeps ticking on every screen
+        // (including gameplay), so the off state must cost as close to nothing
+        // as possible.
+        if (!this._toggle.isEnabled()) {
+            if (this._audio.isActive()) this._audio.stop('disabled');
             this._resetCandidate();
             return;
         }
-        if (!this._toggle.isEnabled()) {
-            if (this._audio.isActive()) this._audio.stop('disabled');
+        if (this._menu.isAnyMenuOpen()) {
+            if (this._audio.isActive()) this._audio.stop('menu-open');
             this._resetCandidate();
             return;
         }

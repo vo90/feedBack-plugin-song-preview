@@ -3,6 +3,10 @@
 // showing" state to JS, so we approximate it via mousedown/change/blur
 // per gated id. Using :focus would latch forever (the browser keeps
 // focus on a select after a pick).
+
+// The v3 per-card "⋮" action menu. Class-based (transient, no stable id).
+const CARD_MENU_CLASS = 'v3-card-menu';
+
 export class MenuGate {
     constructor() {
         // v2 library/favorites selects, plus the v0.3.0 ("fee[dB]ack") Songs
@@ -22,6 +26,12 @@ export class MenuGate {
         // (shown together with it).
         this._WATCHED_IDS = ['plugin-dropdown', 'lib-filter-drawer', 'tuner-plugin-ui', 'v3-songs-overlay'];
         this._cachedEls = null;
+
+        // The currently-open v3 card menu, tracked by _watchCardMenu's observer
+        // instead of being re-queried every tick. Validity is `isConnected`, so
+        // a stale ref costs nothing and can't latch the gate open.
+        this._cardMenu = null;
+        this._cardMenuObserver = null;
     }
 
     // Called from the bootstrap MutationObserver. Refs may now point at
@@ -70,10 +80,49 @@ export class MenuGate {
         // while the drawer is open.
         const v3Overlay = els['v3-songs-overlay'];
         if (v3Overlay && !v3Overlay.classList.contains('hidden')) return true;
-        // v3 per-card "⋮" action menu — transient, class-based (no stable id),
-        // so a direct query rather than the cached id map.
-        if (document.querySelector('.v3-card-menu')) return true;
+        // v3 per-card "⋮" action menu — transient, class-based (no stable id).
+        // Tracked by an observer rather than queried; see _watchCardMenu.
+        this._watchCardMenu();
+        if (this._cardMenu && this._cardMenu.isConnected) return true;
         return false;
+    }
+
+    // The card menu used to be found with a bare
+    // `document.querySelector('.v3-card-menu')` right here, on every rAF tick.
+    // A class selector that MISSES — the normal case, no menu open — cannot
+    // short-circuit: it walks the whole document before returning null. The
+    // Songs screen renders one card per song, so on a large library that single
+    // line walked an enormous tree 60x/sec. Measured on a 50,944-song library:
+    // ~50% of the entire renderer CPU, 2 fps in the venue highway
+    // (feedBack-desktop). It scales with library size, which is why it only
+    // bites big collections and looks fine in dev.
+    //
+    // Track the node instead. The observer fires only when the DOM actually
+    // changes, and inspects just the changed nodes — never the whole tree. The
+    // per-tick read is then `isConnected`, which is O(1) and also goes false for
+    // free when the menu (or the card it lives in) is detached, so a menu torn
+    // down by a re-render can't latch the gate open.
+    _watchCardMenu() {
+        if (this._cardMenuObserver) return;
+        const find = (n) => {
+            if (!n || n.nodeType !== 1) return null;
+            if (n.classList && n.classList.contains(CARD_MENU_CLASS)) return n;
+            // Defensive: songs.js appends the menu directly, so it IS the added
+            // node — but a future wrapper shouldn't silently disable the gate.
+            // Scoped to the added subtree, never the document.
+            return n.querySelector ? n.querySelector('.' + CARD_MENU_CLASS) : null;
+        };
+        this._cardMenuObserver = new MutationObserver((records) => {
+            for (const r of records) {
+                for (const n of r.addedNodes) {
+                    const menu = find(n);
+                    if (menu) this._cardMenu = menu;
+                }
+            }
+        });
+        this._cardMenuObserver.observe(document.body, { childList: true, subtree: true });
+        // A menu already open when the gate first runs (we start lazily).
+        this._cardMenu = document.querySelector('.' + CARD_MENU_CLASS);
     }
 
     destroy() {
@@ -89,5 +138,10 @@ export class MenuGate {
             delete el.dataset.songPreviewSelectGate;
         }
         this._openSelectIds.clear();
+        if (this._cardMenuObserver) {
+            this._cardMenuObserver.disconnect();
+            this._cardMenuObserver = null;
+        }
+        this._cardMenu = null;
     }
 }
