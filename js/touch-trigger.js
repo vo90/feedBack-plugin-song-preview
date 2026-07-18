@@ -21,12 +21,16 @@
 //     would re-trigger the observer → re-decorate → rewrite, a per-frame loop.
 
 import { previewableFrom, readFilename, artElement, isGridCard, isV3Card, isDashboardHero, allPreviewableNodes, dashboardPreviewableNodes } from './host-adapter.js';
+import { markPluginOwned } from './mutation-guard.js';
 
 const STYLE_ID = 'song-preview-touch-styles';
 // Dataset key marking nodes we've injected a play button into. Value is the
 // filename, so a recycled card node (infinite scroll re-uses DOM) whose
 // data-play changed underneath us is detected and re-wired.
 const FLAG = 'songPreviewTouchBtn';
+// The DOM attribute the dataset key maps to — selectors must use this
+// hyphenated form (the camelCase form matches nothing).
+const FLAG_ATTR = 'data-song-preview-touch-btn';
 
 // Self-contained styles — the host ships a purged, prebuilt tailwind.min.css
 // that doesn't include plugin-only classes, so anything that must render is
@@ -345,6 +349,10 @@ export class TouchTrigger {
         // pointerup/click delegate — behaves identically. Touch-only, so native
         // button keyboard semantics aren't lost.
         const btn = document.createElement('span');
+        // Plugin-owned marker: lets the bootstrap observer ignore the
+        // childList mutation this injection causes inside the observed card
+        // containers (see mutation-guard.js).
+        markPluginOwned(btn);
         btn.setAttribute('role', 'button');
         btn.tabIndex = -1;
         btn.className = 'sp-touch-play'
@@ -381,7 +389,7 @@ export class TouchTrigger {
     }
 
     _removeAll() {
-        for (const node of document.querySelectorAll(`[data-${FLAG}]`)) {
+        for (const node of document.querySelectorAll(`[${FLAG_ATTR}]`)) {
             node.querySelector('[data-song-preview-play]')?.remove();
             delete node.dataset[FLAG];
         }

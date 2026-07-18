@@ -10,6 +10,7 @@
 // also get a `song-preview-playing` class so the active item can be tinted
 // (a thin perimeter alone is easy to miss on a dense list).
 import { artElement } from './host-adapter.js';
+import { markPluginOwned } from './mutation-guard.js';
 
 const PLAYING_STYLE_ID = 'song-preview-playing-styles';
 // v2 list rows are `.song-row`; v3 (#v3-songs) tree rows are `[data-fn]` nodes
@@ -197,6 +198,10 @@ export class ProgressScope {
         if (host && host.classList) host.classList.add('song-preview-playing');
 
         const canvas = document.createElement('canvas');
+        // Plugin-owned marker: the append below lands inside the observed
+        // card containers; the bootstrap observer skips our own mutations
+        // (see mutation-guard.js).
+        markPluginOwned(canvas);
         canvas.className = 'song-preview-scope';
         canvas.style.cssText =
             'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';

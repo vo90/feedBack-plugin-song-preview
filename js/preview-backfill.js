@@ -13,7 +13,8 @@
 // triggered from any surface updates the others without explicit
 // coordination.
 
-import { readFilename, isGridCard, isV3Card, allPreviewableNodes } from './host-adapter.js';
+import { readFilename, isGridCard, artElement, allPreviewableNodes } from './host-adapter.js';
+import { markPluginOwned } from './mutation-guard.js';
 
 const API_BASE = '/api/plugins/song_preview';
 const POLL_INTERVAL_MS = 500;
@@ -25,6 +26,11 @@ const PROGRESS_POLL_MS = 350;
 // into. Value is the filename so we can detect "the data-play changed
 // underneath us" (infinite scroll re-uses card nodes).
 const BUTTON_FLAG = 'songPreviewFixBtn';
+// The DOM attribute the dataset key above maps to (dataset camelCase ↔
+// hyphenated attribute). Attribute SELECTORS must use this form — a
+// `[data-songPreviewFixBtn]` selector lower-cases to an attribute that is
+// never set, so the old cleanup sweeps silently matched nothing.
+const BUTTON_FLAG_ATTR = 'data-song-preview-fix-btn';
 
 // ── Tailwind backfill ───────────────────────────────────────────────────
 //
@@ -85,7 +91,49 @@ const BACKFILL_STYLES = `
 .sm\\:flex-row{flex-direction:row}
 .sm\\:flex-wrap{flex-wrap:wrap}
 .sm\\:items-center{align-items:center}
-}`;
+}
+/* ── Grid-card Fix overlay ──────────────────────────────────────────────
+   The library's windowed grid measures ONE card and derives every row
+   position from that height, so the card Fix affordance must never add
+   height to the card. The wrap overlays the album-art square (absolute)
+   instead of flowing below the tags.
+
+   Corner budget on a v3 card's art square (static/v3/songs.js songCard):
+     top-2 left-2   tuning chip (left-9 in select mode) / top-2 checkbox
+     top-10 left-2  metadata "no match" badge
+     top-2 right-2  favourite / save / ⋮ menu + personal badges
+     bottom-0 left-0  FEEDPAK/format badge  (~16px tall)
+     bottom-0 right-0 accuracy badge        (~20px tall)
+   …plus OUR touch play button (.sp-touch-play, right:8px bottom:8px, 32px
+   on v3) — so the free strip is bottom-LEFT, above the format badge and
+   left of the play button. Hence bottom:26px (clears the format badge)
+   and the right-hand inset in max-width (clears the play button).
+   pointer-events pass through the wrap itself so only the pill steals
+   clicks from the card's play surface. */
+.sp-fix-overlay{
+    position:absolute;left:4px;bottom:26px;z-index:20;
+    max-width:calc(100% - 52px);pointer-events:none}
+.sp-fix-overlay>*{pointer-events:auto}
+/* Compact pill, same yellow warn look as the row Fix button but with an
+   opaque base so it reads over arbitrary album art. */
+.sp-fix-pill{
+    display:flex;align-items:center;gap:.25rem;max-width:100%;
+    padding:.125rem .375rem;border:1px solid rgb(234 179 8 / .4);
+    border-radius:.25rem;font-size:10px;font-weight:700;line-height:1.5;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    color:rgb(253 224 71);background:rgb(113 63 18 / .85);
+    cursor:pointer;transition:background-color 150ms ease}
+.sp-fix-pill:hover{background:rgb(133 77 14 / .95)}
+.sp-fix-pill svg{flex:0 0 auto}
+.sp-fix-pill--error{
+    color:rgb(252 165 165);border-color:rgb(185 28 28 / .5);
+    background:rgb(69 10 10 / .85)}
+.sp-fix-pill--error:hover{background:rgb(127 29 29 / .9)}
+/* In-flight fix: small backdrop panel holding the determinate bar + stage
+   label, still absolutely positioned via the wrap — zero height impact in
+   every state. */
+.sp-fix-fixing{width:7rem;max-width:100%;padding:.25rem .375rem;
+    background:rgb(0 0 0 / .55);border-radius:.375rem}`;
 
 function _ensureStyles() {
     if (typeof document === 'undefined' || document.getElementById(STYLE_ID)) return;
@@ -125,6 +173,12 @@ export class PreviewBackfill {
         this._fileStage = new Map();
         this._progressPolling = new Set();
         this._progressTimers = new Map();
+
+        // True once decorate() has attached at least one library-card badge.
+        // Gates the "nothing missing" cleanup sweep so the common idle path
+        // (library fully previewed, or badges never attached) doesn't run a
+        // whole-document attribute query on every MutationObserver tick.
+        this._decorated = false;
 
         // Single-flight guards.
         this._refreshInflight = null;
@@ -827,9 +881,15 @@ export class PreviewBackfill {
 
     decorate() {
         if (!this._missing.size) {
-            for (const el of document.querySelectorAll(`[data-${BUTTON_FLAG}]`)) {
-                el.querySelector('[data-fix-missing-preview]')?.remove();
-                delete el.dataset[BUTTON_FLAG];
+            // Only sweep old badges out when some were actually attached —
+            // this path runs on every MutationObserver tick, and the
+            // attribute query below walks the whole document.
+            if (this._decorated) {
+                for (const el of document.querySelectorAll(`[${BUTTON_FLAG_ATTR}]`)) {
+                    el.querySelector('[data-fix-missing-preview]')?.remove();
+                    delete el.dataset[BUTTON_FLAG];
+                }
+                this._decorated = false;
             }
             return;
         }
@@ -867,26 +927,34 @@ export class PreviewBackfill {
         const isCard = isGridCard(node);
         const wrap = document.createElement('div');
         wrap.setAttribute('data-fix-missing-preview', filename);
-        // Cards: full-width block beneath the tags. Rows: flex child
-        // sitting next to the format (STEMS / SLOPPAK) badge in the
-        // title's flex container — same horizontal band, same scale,
-        // immediately visible at row-glance.
-        //
-        // The card wrapper's padding has to match the host card body so the
-        // full-width button lines up with the title/tags above it: v2 cards
-        // wrap their body in a `.p-4` block, so we mirror that horizontal inset
-        // (`px-4`); v3 ("fee[dB]ack") card bodies are flush to the card edge, so
-        // the same `px-4` would over-inset and the button would render narrower
-        // than everything else — there we just add a top margin.
-        wrap.className = isCard
-            ? (isV3Card(node) ? 'mt-2' : 'px-4 pb-4 -mt-1')
-            : 'flex-shrink-0';
+        // Stamp the wrap plugin-owned so the bootstrap observer (screen.js)
+        // can drop the childList mutations our own inject/remove/innerHTML
+        // writes cause — the append below happens INSIDE the observed card
+        // subtree and would otherwise re-trigger observer → injectAll →
+        // decorate on every tick.
+        markPluginOwned(wrap);
+        // Cards: an absolutely-positioned OVERLAY on the album-art square —
+        // NEVER an in-flow block. The host's windowed grid (v3 songs.js)
+        // measures one card and derives every row position / the sizer
+        // height from it, so an in-flow badge that only some cards carry
+        // makes card heights non-uniform and the grid's scroll math
+        // oscillate depending on which card gets measured — the "library
+        // stutters until you can't scroll" bug. Rows: flex child sitting
+        // next to the format (STEMS / SLOPPAK) badge in the title's flex
+        // container — inline within the row's existing height band.
+        wrap.className = isCard ? 'sp-fix-overlay' : 'flex-shrink-0';
         this._fillFixUI(wrap, filename, isCard);
         if (isCard) {
-            // Append to the card itself; placement after p-4 puts the
-            // button below the metadata block, matching the convention
-            // of retune-btn / sync-status from app.js's renderGridCards.
-            node.appendChild(wrap);
+            // Anchor inside the art square (v2 `.card-art` / v3
+            // `[data-v3-play]`), same surface the touch play button and the
+            // progress ring use. v3's art square is already
+            // position:relative; guard for v2/unknown markup (one-time
+            // layout read at attach, mirroring touch-trigger).
+            const host = artElement(node) || node;
+            if (getComputedStyle(host).position === 'static') {
+                host.style.position = 'relative';
+            }
+            host.appendChild(wrap);
         } else {
             // Rows: drop into the title's flex container (the FIRST
             // inner div, which holds title + format badge). The format
@@ -897,6 +965,7 @@ export class PreviewBackfill {
             const titleContainer = node.querySelector(':scope > .flex-1');
             (titleContainer || node).appendChild(wrap);
         }
+        this._decorated = true;
         // No per-wrap click handler — clicks are caught by the single
         // document-level delegate installed in the constructor. That
         // delegate keys on `[data-fix-one="<filename>"]` (the same
@@ -909,7 +978,11 @@ export class PreviewBackfill {
 
     _refreshFixUI(node, filename) {
         const wrap = node.querySelector('[data-fix-missing-preview]');
-        if (!wrap) return;
+        // A recycled card re-rendered with the SAME filename gets fresh
+        // innerHTML from the host — the wrap is gone but the dataset flag
+        // survives on the node. Re-attach instead of silently losing the
+        // badge until the next audit.
+        if (!wrap) { this._attachFixUI(node, filename); return; }
         const isCard = isGridCard(node);
         this._fillFixUI(wrap, filename, isCard);
     }
@@ -941,13 +1014,14 @@ export class PreviewBackfill {
         const fnAttr = _escape(filename);
 
         if (state === 'fixing') {
-            // Determinate progress bar (card) / stage-text pill (row). The
-            // bar fills as the backend reports stages — width via the
-            // data-fix-progress hook, label via data-fix-stage. The row has no
-            // room for a bar, so it shows the live stage text instead.
+            // Determinate progress bar (card overlay panel) / stage-text pill
+            // (row). The bar fills as the backend reports stages — width via
+            // the data-fix-progress hook, label via data-fix-stage. Every card
+            // state renders inside the absolute overlay wrap, so none of them
+            // can change the card's height.
             wrap.innerHTML = isCard
                 ? this._fixingMarkup(filename, {
-                    wrapClass: 'mt-2 w-full',
+                    wrapClass: 'sp-fix-fixing',
                     barClass: 'bg-yellow-400',
                     labelClass: 'text-yellow-400/60',
                 })
@@ -959,11 +1033,15 @@ export class PreviewBackfill {
         if (state === 'error') {
             const err = this._fileError.get(filename) || 'unknown error';
             wrap.innerHTML = isCard
+                // Card = compact overlay pill: the label is short so it fits
+                // the free bottom-left strip of the art square; the full
+                // wording lives in the tooltip.
                 ? `<button type="button" data-fix-one="${fnAttr}"
-                           title="Last error: ${_escape(err)}"
-                           class="mt-2 w-full px-2 py-1.5 bg-red-900/30 hover:bg-red-900/50 border border-red-700/50 rounded-lg text-xs font-medium text-red-300 transition flex items-center justify-center gap-1.5">
-                       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                       Retry Fix Preview
+                           title="Retry fixing the missing preview — last error: ${_escape(err)}"
+                           aria-label="Retry fixing the missing preview"
+                           class="sp-fix-pill sp-fix-pill--error">
+                       <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                       Retry
                    </button>`
                 : `<button type="button" data-fix-one="${fnAttr}"
                            title="Last error: ${_escape(err)}"
@@ -975,9 +1053,9 @@ export class PreviewBackfill {
         // idle
         wrap.innerHTML = isCard
             ? `<button type="button" data-fix-one="${fnAttr}" title="${_escape(tooltip)}"
-                       class="mt-2 w-full px-2 py-1.5 bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/30 rounded-lg text-xs font-medium text-yellow-400 transition flex items-center justify-center gap-1.5">
-                   <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0l-7.1 12.25A2 2 0 005 19z"/></svg>
-                   Fix Missing Preview
+                       class="sp-fix-pill" aria-label="Fix missing preview">
+                   <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0l-7.1 12.25A2 2 0 005 19z"/></svg>
+                   Fix preview
                </button>`
             : `<button type="button" data-fix-one="${fnAttr}" title="${_escape(tooltip)}"
                        class="${rowBase} bg-yellow-500/20 hover:bg-yellow-500/30 border border-yellow-500/40 text-yellow-300"
@@ -992,10 +1070,11 @@ export class PreviewBackfill {
         document.getElementById(STYLE_ID)?.remove();
         // Cancel any in-flight single-fix progress polls.
         for (const filename of [...this._progressPolling]) this._stopProgressPoll(filename);
-        for (const el of document.querySelectorAll(`[data-${BUTTON_FLAG}]`)) {
+        for (const el of document.querySelectorAll(`[${BUTTON_FLAG_ATTR}]`)) {
             el.querySelector('[data-fix-missing-preview]')?.remove();
             delete el.dataset[BUTTON_FLAG];
         }
+        this._decorated = false;
         for (const id of ['song-preview-backfill', 'song-preview-backfill-screen']) {
             const root = document.getElementById(id);
             if (root) delete root.dataset.boundBackfill;
