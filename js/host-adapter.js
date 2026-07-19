@@ -157,14 +157,41 @@ export function isDashboardHero(card) {
     return id === 'v3-continue' || id === 'v3-pick';
 }
 
+// The card-bearing library containers, by host version. Mirrors the list the
+// bootstrap observer (screen.js) narrows itself to — cards outside these never
+// get observed ticks, so scanning wider would be wasted work anyway.
+const LEGACY_CONTAINER_IDS = ['lib-grid', 'lib-tree', 'fav-grid', 'fav-tree'];
+
 // Every previewable LIBRARY card/row currently in the DOM, across both markups.
 // Used by the per-tick decorators for the Fix badge (library only) and the touch
 // buttons (which ALSO cover the dashboard via dashboardPreviewableNodes).
+//
+// Scoped to the known containers rather than document-wide: this runs on every
+// MutationObserver tick (i.e. every scroll frame while the windowed grid
+// recycles nodes), and a document-level selector that MISSES — e.g. the legacy
+// one on a v3 host — can't short-circuit; it walks the entire document before
+// returning empty. getElementById + container-scoped querySelectorAll keeps the
+// walk bounded to the cards that can actually match. The document-wide sweep
+// survives only as a fallback for a host with none of the known containers.
 export function allPreviewableNodes() {
     const out = [];
-    for (const n of document.querySelectorAll(LEGACY_PREVIEWABLE)) out.push(n);
-    for (const n of document.querySelectorAll(V3_PREVIEWABLE)) {
-        if (_isV3PreviewableCard(n)) out.push(n);
+    const legacyRoots = [];
+    for (const id of LEGACY_CONTAINER_IDS) {
+        const el = document.getElementById(id);
+        if (el) legacyRoots.push(el);
+    }
+    const v3Root = document.getElementById('v3-songs');
+    if (legacyRoots.length || v3Root) {
+        for (const root of legacyRoots) {
+            for (const n of root.querySelectorAll(LEGACY_PREVIEWABLE)) out.push(n);
+        }
+    } else {
+        for (const n of document.querySelectorAll(LEGACY_PREVIEWABLE)) out.push(n);
+    }
+    if (v3Root) {
+        for (const n of v3Root.querySelectorAll('[data-fn]')) {
+            if (_isV3PreviewableCard(n)) out.push(n);
+        }
     }
     return out;
 }

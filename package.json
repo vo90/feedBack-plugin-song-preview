@@ -1,0 +1,8 @@
+{
+  "name": "feedback-plugin-song-preview",
+  "private": true,
+  "description": "Test-runner manifest only — the plugin itself ships no npm dependencies and needs no build step.",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\""
+  }
+}

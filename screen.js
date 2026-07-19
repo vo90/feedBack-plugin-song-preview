@@ -48,6 +48,7 @@
         'preview-backfill',
         'preview-volume',
         'touch-trigger',
+        'mutation-guard',
     ];
 
     Promise.all(modules.map(name => import(`${JS_URL}/${name}.js`)))
@@ -61,6 +62,7 @@
             { PreviewBackfill },
             { PreviewVolume },
             { TouchTrigger },
+            { isSelfInflictedMutation },
         ]) => {
             const toggle = new PreviewToggle();
             const menu = new MenuGate();
@@ -113,15 +115,26 @@
 
             const obs = new MutationObserver((mutations) => {
                 for (const m of mutations) {
-                    if (m.type === 'childList' && (m.addedNodes.length || m.removedNodes.length)) {
-                        // Caches may now point at detached nodes — invalidate
-                        // synchronously before the next rAF tick reads them.
-                        // Inject is coalesced separately.
-                        loop.invalidateCursorCache();
-                        menu.invalidateCache();
-                        scheduleInject();
-                        return;
+                    if (m.type !== 'childList' || (!m.addedNodes.length && !m.removedNodes.length)) {
+                        continue;
                     }
+                    // Our own decorators (Fix badges, touch buttons, progress
+                    // ring) append/remove nodes INSIDE these observed card
+                    // containers. Reacting to those mutations schedules
+                    // another injectAll, whose decorators mutate again — a
+                    // per-frame observer→inject→observer feedback loop while
+                    // the windowed grid recycles cards on every scroll frame.
+                    // Records that only touch plugin-owned nodes are ours;
+                    // skip them. Host mutations always get through (any
+                    // non-owned node in the record disqualifies the skip).
+                    if (isSelfInflictedMutation(m)) continue;
+                    // Caches may now point at detached nodes — invalidate
+                    // synchronously before the next rAF tick reads them.
+                    // Inject is coalesced separately.
+                    loop.invalidateCursorCache();
+                    menu.invalidateCache();
+                    scheduleInject();
+                    return;
                 }
             });
             // Narrow the observer to the card-bearing containers instead of
