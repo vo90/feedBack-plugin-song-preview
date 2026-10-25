@@ -29,7 +29,7 @@ export class PreviewLoop {
 
         this._candidateTarget = null;
         this._candidateSince = 0;
-        // Single-play gate: when a clip plays through to 'ended', store its
+        // Single-play gate: when a clip ends or native playback fails, store its
         // filename here so the poll won't immediately replay it while the
         // cursor sits on the same card. Cleared the moment the cursor moves
         // to a different file, off cards entirely, or a hard-suspend fires.
@@ -46,6 +46,7 @@ export class PreviewLoop {
         this._cursorCacheDirty = true;
 
         audio.on('completed', (file) => { this._completedFile = file; });
+        audio.on('failed', (file) => { this._completedFile = file; });
         input.onMouseMove(() => audio.clearExternalAudio());
         input.onSuspend(() => this.suspend());
 

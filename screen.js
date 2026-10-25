@@ -188,7 +188,9 @@
             const _onScreenChanged = (e) => {
                 const id = e && e.detail && e.detail.id;
                 if (_LIBRARY_SCREENS.has(id)) backfill.refresh();
+                else loop.suspend();
             };
+            const _onSongPlay = () => audio.externalAudioStarted();
             // `library:changed` is emitted when a song is added to the library
             // (e.g. built in the editor) — refresh immediately rather than
             // waiting for the user to navigate. screen:changed above is the
@@ -197,6 +199,7 @@
             if (window.slopsmith && typeof window.slopsmith.on === 'function') {
                 window.slopsmith.on('screen:changed', _onScreenChanged);
                 window.slopsmith.on('library:changed', _onLibraryChanged);
+                window.slopsmith.on('song:play', _onSongPlay);
             }
 
             // Teardown for when fee[dB]ack unloads the plugin. Reverses
@@ -207,6 +210,7 @@
                 if (window.slopsmith && typeof window.slopsmith.off === 'function') {
                     window.slopsmith.off('screen:changed', _onScreenChanged);
                     window.slopsmith.off('library:changed', _onLibraryChanged);
+                    window.slopsmith.off('song:play', _onSongPlay);
                 }
                 loop.destroy();
                 scope.destroy();

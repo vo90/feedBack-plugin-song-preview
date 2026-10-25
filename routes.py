@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import os
 import re
 import sys
@@ -9,10 +10,10 @@ import tempfile
 import threading
 import zipfile
 import yaml
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 # server.py normally puts lib/ on the path; this is just for direct/reloaded use.
 _LIB = Path(__file__).resolve().parents[2] / "lib"
@@ -386,7 +387,7 @@ def _resolve_dlc_path(file: str) -> Path:
         raise HTTPException(status_code=400, detail="file parameter required")
     try:
         p = Path(file)
-        if p.is_absolute() or any(part == ".." for part in p.parts):
+        if p.is_absolute() or PureWindowsPath(file).drive or any(part == ".." for part in p.parts):
             raise ValueError("path traversal")
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid file path")
@@ -402,6 +403,30 @@ def _resolve_dlc_path(file: str) -> Path:
     if not full.exists():
         raise HTTPException(status_code=404, detail="file not found")
     return full
+
+
+def _prepare_preview(file: str) -> Path:
+    """Resolve the same cached clip for browser and native playback."""
+    full = _resolve_dlc_path(file)
+    if file.lower().endswith((".sloppak", ".feedpak")):
+        return _sloppak_preview_ogg(full)
+    if full.is_dir():
+        return _loose_preview_ogg(full)
+    raise HTTPException(status_code=400, detail="unsupported file format")
+
+
+def _require_local_client(request: Request) -> None:
+    # Trust the transport peer only. Host / X-Forwarded-For headers are not
+    # evidence of a local caller and must never expose filesystem paths to LAN
+    # clients. A missing peer (including a Unix/proxy transport) fails closed.
+    try:
+        address = ipaddress.ip_address(request.client.host if request.client else "")
+        address = getattr(address, "ipv4_mapped", None) or address
+        if address.is_loopback:
+            return
+    except ValueError:
+        pass
+    raise HTTPException(status_code=403, detail="native preview requires a local client")
 
 
 def setup(app: FastAPI, context: dict) -> None:
@@ -616,6 +641,24 @@ def setup(app: FastAPI, context: dict) -> None:
             headers=cache_headers,
         )
 
+    @app.get("/api/plugins/song_preview/native-path")
+    async def get_native_path(file: str, request: Request):
+        _require_local_client(request)
+        try:
+            ogg = await asyncio.get_running_loop().run_in_executor(None, _prepare_preview, file)
+            # Even a substituted preparation helper or a cache symlink cannot
+            # make this endpoint return an arbitrary library/system file.
+            resolved = ogg.resolve()
+            resolved.relative_to(_get_cache_dir().resolve())
+            if not resolved.is_file() or resolved.suffix.lower() != ".ogg":
+                raise ValueError("invalid preview cache entry")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[song_preview] native preview preparation failed for {file!r}: {e}")
+            raise HTTPException(status_code=500, detail="audio preparation failed")
+        return JSONResponse({"path": str(resolved)}, headers={"Cache-Control": "no-store"})
+
     @app.api_route("/api/plugins/song_preview/audio", methods=["GET", "HEAD"])
     async def get_audio(file: str, request: Request):
         # HEAD is accepted explicitly so the frontend can probe for
@@ -627,52 +670,8 @@ def setup(app: FastAPI, context: dict) -> None:
         # missing-preview, so a 405 just got dropped and the hover loop
         # retried GET indefinitely — visible as hundreds of /audio GETs
         # per second in the access log).
-        if not file:
-            raise HTTPException(status_code=400, detail="file parameter required")
-
-        # Reject anything that smells like traversal before we touch disk.
         try:
-            p = Path(file)
-            if p.is_absolute() or any(part == ".." for part in p.parts):
-                raise ValueError("path traversal")
-        except ValueError:
-            raise HTTPException(status_code=400, detail="invalid file path")
-
-        get_dlc = _context.get("get_dlc_dir")
-        if not callable(get_dlc):
-            raise HTTPException(status_code=503, detail="DLC folder not configured")
-        dlc_root = Path(get_dlc())
-
-        # Belt-and-braces: even after resolving symlinks, stay inside the DLC root.
-        full = (dlc_root / file).resolve()
-        try:
-            full.relative_to(dlc_root.resolve())
-        except ValueError:
-            raise HTTPException(status_code=400, detail="invalid file path")
-
-        if not full.exists():
-            raise HTTPException(status_code=404, detail="file not found")
-
-        file_lower = file.lower()
-        try:
-            if file_lower.endswith((".sloppak", ".feedpak")):
-                # Covers both forms (zip-file and directory) of both package
-                # extensions: the legacy `.sloppak` and the current `.feedpak`
-                # (identical on-disk layout — manifest.yaml + stems/ + a
-                # top-level `preview:` clip — just a renamed container).
-                ogg = await asyncio.get_event_loop().run_in_executor(
-                    None, _sloppak_preview_ogg, full
-                )
-            elif full.is_dir():
-                # Loose-folder song (audio.wem + arrangement XMLs). No baked
-                # preview — generate one on demand from the folder's WEM and
-                # cache it. _loose_preview_ogg raises 404 (not 400) on failure
-                # so the client memoises and stops retrying on every hover.
-                ogg = await asyncio.get_event_loop().run_in_executor(
-                    None, _loose_preview_ogg, full
-                )
-            else:
-                raise HTTPException(status_code=400, detail="unsupported file format")
+            ogg = await asyncio.get_running_loop().run_in_executor(None, _prepare_preview, file)
         except HTTPException:
             raise
         except Exception as e:
